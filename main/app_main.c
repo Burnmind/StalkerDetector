@@ -1,4 +1,5 @@
 #include <string.h>
+#include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "esp_wifi.h"
@@ -11,14 +12,17 @@
 
 #define SCAN_LIST_SIZE 20
 #define INDICATOR_GPIO GPIO_NUM_13
+#define SIGNAL_PERIOD 100000
 
-uint8_t TRIGGER_AP[33] = "TanukiTheGreat";
 wifi_ap_record_t apInfo[SCAN_LIST_SIZE];
 uint16_t apCount = 0;
-uint8_t indicatorLevel = 1;
+
+esp_timer_handle_t runSignalTimer;
+esp_timer_handle_t stopSignalTimer;
 
 static void wifiScan(void);
-static void triggerSignal(void* arg);
+static void runSignal(void* arg);
+static void stopSignal(void* arg);
 
 void app_main(void)
 {
@@ -45,33 +49,43 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    const esp_timer_create_args_t anomalySignal = {
-            .callback = &triggerSignal,
-            .name = "triggerSignal"
+    const esp_timer_create_args_t runSignalConfig = {
+            .callback = &runSignal,
+            .name = "runSignal"
     };
+    ESP_ERROR_CHECK(esp_timer_create(&runSignalConfig, &runSignalTimer));
 
-    esp_timer_handle_t anomalySignalTimer;
-    ESP_ERROR_CHECK(esp_timer_create(&anomalySignal, &anomalySignalTimer));
+    const esp_timer_create_args_t stopSignalConfig = {
+            .callback = &stopSignal,
+            .name = "stopSignal"
+    };
+    ESP_ERROR_CHECK(esp_timer_create(&stopSignalConfig, &stopSignalTimer));
 
-    float coefficient;
     uint64_t delayPeriod;
+    uint8_t clearTimer = 1;
     while (true) {
         wifiScan();
+        clearTimer = 1;
 
         for (int i = 0; (i < SCAN_LIST_SIZE) && (i < apCount); i++) {
-            //if (apInfo[i].ssid == TRIGGER_AP) {
-                if (apInfo[i].rssi > -50) {
-                    coefficient = apInfo[i].rssi * 0.6;
-                    delayPeriod = (coefficient * coefficient + 100) * 1000;
-
-                    ESP_LOGI("qwe", "wifiScan %lld", delayPeriod);
-                    if (esp_timer_is_active(anomalySignalTimer)) {
-                        ESP_ERROR_CHECK(esp_timer_stop(anomalySignalTimer));
-                    }
-
-                    ESP_ERROR_CHECK(esp_timer_start_periodic(anomalySignalTimer, delayPeriod));
+            if (apInfo[i].rssi > -50) {
+                delayPeriod = ( -1 * apInfo[i].rssi - 34) * 5 * 10000;
+                if (200000 > delayPeriod) {
+                    delayPeriod = 200000;
                 }
-            //}
+
+                clearTimer = 0;
+
+                if (esp_timer_is_active(runSignalTimer)) {
+                    ESP_ERROR_CHECK(esp_timer_stop(runSignalTimer));
+                }
+
+                ESP_ERROR_CHECK(esp_timer_start_periodic(runSignalTimer, delayPeriod));
+            }
+        }
+
+        if (clearTimer != 0 && esp_timer_is_active(runSignalTimer)) {
+            ESP_ERROR_CHECK(esp_timer_stop(runSignalTimer));
         }
     }
 }
@@ -84,9 +98,21 @@ static void wifiScan(void)
     ESP_ERROR_CHECK(esp_wifi_scan_get_ap_num(&apCount));
 }
 
-static void triggerSignal(void* arg)
+static void runSignal(void* arg)
 {
-    ESP_LOGI("qwe", "triggerSignal");
-    gpio_set_level(INDICATOR_GPIO, indicatorLevel);
-    indicatorLevel = indicatorLevel > 0 ? 0 : 1;
+    gpio_set_level(INDICATOR_GPIO, 1);
+
+    ESP_LOGI("delayPeriod", "runSignal");
+
+    if (esp_timer_is_active(stopSignalTimer)) {
+        ESP_ERROR_CHECK(esp_timer_stop(stopSignalTimer));
+    }
+
+    ESP_ERROR_CHECK(esp_timer_start_once(stopSignalTimer, SIGNAL_PERIOD));
+}
+
+static void stopSignal(void* arg)
+{
+    ESP_LOGI("delayPeriod", "stopSignal");
+    gpio_set_level(INDICATOR_GPIO, 0);
 }
